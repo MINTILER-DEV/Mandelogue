@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="referrer" content="no-referrer">
+  <title>Mandelogue Web Editor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+  <link rel="stylesheet" href="./css/styles.css">
+</head>
+<body>
+  <div id="app" class="app-layout">
+    <header class="topbar" role="banner">
+      <div class="topbar-left">
+        <div id="topbar-tabs" class="topbar-tabs" aria-label="Topbar tabs"></div>
+        <div id="topbar-menus" class="topbar-menus" aria-hidden="true"></div>
+      </div>
+      <div id="current-file-display" class="current-file-display">No file open</div>
+      <div class="topbar-right">
+        <div id="status-display" class="status-display" aria-live="polite"></div>
+        <div class="settings-root">
+          <button id="settings-button" class="settings-button" type="button" aria-haspopup="dialog">
+            Settings
+          </button>
+          <div id="settings-menu" class="settings-menu" aria-label="Settings panel">
+            <div class="settings-title">Mount / Sync Tuning</div>
+            <div class="settings-presets">
+              <button id="settings-preset-fast" class="settings-preset" type="button">Fast</button>
+              <button id="settings-preset-balanced" class="settings-preset" type="button">Balanced</button>
+              <button id="settings-preset-full" class="settings-preset" type="button">Full Import</button>
+            </div>
+            <label class="settings-row">
+              <span>Max Mount Files</span>
+              <input id="setting-max-mount-files" type="number" min="100" step="100">
+            </label>
+            <label class="settings-row">
+              <span>Max File KB</span>
+              <input id="setting-max-file-kb" type="number" min="64" step="64">
+            </label>
+            <label class="settings-row">
+              <span>Max Total MB</span>
+              <input id="setting-max-total-mb" type="number" min="4" step="4">
+            </label>
+            <label class="settings-row">
+              <span>Sync Interval (s)</span>
+              <input id="setting-sync-interval" type="number" min="2" step="1">
+            </label>
+            <label class="settings-row">
+              <span>VM Batch Cmds</span>
+              <input id="setting-vm-batch-cmds" type="number" min="8" max="64" step="4">
+            </label>
+            <label class="settings-row">
+              <span>VM Chunk B64</span>
+              <input id="setting-vm-b64-chunk" type="number" min="128" max="2048" step="128">
+            </label>
+            <div class="settings-actions">
+              <button id="settings-apply" class="settings-action" type="button">Apply</button>
+              <button id="settings-close" class="settings-action" type="button">Close</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <div class="workspace">
+      <aside class="left-panel" aria-label="File explorer">
+        <div class="panel-title">Explorer</div>
+        <div id="explorer" class="explorer-tree"></div>
+      </aside>
+
+      <section class="center-panel" aria-label="Editor panel">
+        <div id="editor-tabs" class="editor-tabs"></div>
+        <div id="editor" class="editor-host"></div>
+      </section>
+    </div>
+
+    <section id="terminal-panel" class="terminal-panel" aria-label="Terminal panel">
+      <div id="vm-progress" class="vm-progress" aria-live="polite">
+        <div id="vm-progress-text" class="vm-progress-text">VM: waiting for initialization...</div>
+        <div class="vm-progress-track">
+          <div id="vm-progress-fill" class="vm-progress-fill is-indeterminate"></div>
+        </div>
+      </div>
+      <div
+        id="terminal-resize-handle"
+        class="terminal-resize-handle"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize terminal"
+        tabindex="0"
+      ></div>
+      <div id="terminal" class="terminal-host">
+        <div id="terminal-mount-overlay" class="terminal-mount-overlay" aria-hidden="true">
+          <div class="terminal-mount-title">Mounting Project Into VM...</div>
+          <div id="terminal-mount-text" class="terminal-mount-text">Preparing file list...</div>
+          <div class="terminal-mount-progress-track">
+            <div id="terminal-mount-progress-fill" class="terminal-mount-progress-fill"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <footer id="bottom-bar" class="bottom-bar" aria-live="polite">
+      <span id="bottom-vm" class="bottom-item">VM: waiting...</span>
+      <span id="bottom-folder" class="bottom-item">Folder: none</span>
+      <span id="bottom-tabs" class="bottom-item">Tabs: 0</span>
+      <span id="bottom-terminal" class="bottom-item">Term: -</span>
+    </footer>
+  </div>
+
+  <div id="vm-screen" class="vm-screen" aria-hidden="true"></div>
+  <script type="module" src="./js/main.js"></script>
+</body>
+</html>
