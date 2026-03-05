@@ -820,7 +820,7 @@ const ZSTD_WASM_BINARY_URL =
 let zstdWorker = null;
 let zstdWorkerSeq = 0;
 const zstdPendingRequests = new Map();
-const ZSTD_WORKER_TIMEOUT_MS = 150000;
+const ZSTD_WORKER_TIMEOUT_MS = 300000;
 
 function getZstdWorker() {
   if (zstdWorker) {
@@ -877,11 +877,15 @@ function getZstdWorker() {
 async function runZstdWorkerOperation(operation, arrayBuffer, options = {}) {
   const worker = getZstdWorker();
   const requestId = `zstd_${Date.now().toString(36)}_${(zstdWorkerSeq += 1).toString(36)}`;
+  const timeoutMs = Math.max(
+    10000,
+    Number.isFinite(options.timeoutMs) ? Number(options.timeoutMs) : ZSTD_WORKER_TIMEOUT_MS
+  );
   return new Promise((resolve, reject) => {
     const timeoutId = setTimeout(() => {
       zstdPendingRequests.delete(requestId);
       reject(new Error("zstd operation timed out."));
-    }, ZSTD_WORKER_TIMEOUT_MS);
+    }, timeoutMs);
 
     zstdPendingRequests.set(requestId, {
       resolve: (value) => {
@@ -903,11 +907,21 @@ async function runZstdWorkerOperation(operation, arrayBuffer, options = {}) {
 }
 
 async function zstdCompressArrayBuffer(arrayBuffer, level = 1) {
-  return runZstdWorkerOperation("compress", arrayBuffer, { level });
+  const bytes = arrayBuffer?.byteLength || 0;
+  const timeoutMs = Math.min(
+    20 * 60 * 1000,
+    5 * 60 * 1000 + Math.ceil(bytes / (8 * 1024 * 1024)) * 1000
+  );
+  return runZstdWorkerOperation("compress", arrayBuffer, { level, timeoutMs });
 }
 
 async function zstdDecompressArrayBuffer(arrayBuffer) {
-  return runZstdWorkerOperation("decompress", arrayBuffer, {});
+  const bytes = arrayBuffer?.byteLength || 0;
+  const timeoutMs = Math.min(
+    20 * 60 * 1000,
+    2 * 60 * 1000 + Math.ceil(bytes / (8 * 1024 * 1024)) * 900
+  );
+  return runZstdWorkerOperation("decompress", arrayBuffer, { timeoutMs });
 }
 
 function disposeZstdWorker() {
@@ -951,6 +965,8 @@ function startProgressTicker(bus, message, options = {}) {
   const initial = Number.isFinite(options.initial) ? options.initial : 10;
   const max = Number.isFinite(options.max) ? options.max : 92;
   let percent = Math.max(0, Math.min(max, initial));
+  let direction = 1;
+  const lowerBound = Math.max(0, max - 10);
 
   bus.emit("vm-progress", {
     message,
@@ -959,10 +975,14 @@ function startProgressTicker(bus, message, options = {}) {
   });
 
   const timer = setInterval(() => {
-    // Keep moving near the end instead of freezing at a hard cap.
-    const remaining = Math.max(0, max - percent);
-    const step = Math.max(0.25, remaining * 0.08);
-    percent = Math.min(max, percent + step);
+    percent += direction * 1.4;
+    if (percent >= max) {
+      percent = max;
+      direction = -1;
+    } else if (percent <= lowerBound) {
+      percent = lowerBound;
+      direction = 1;
+    }
     bus.emit("vm-progress", {
       message,
       percent,
@@ -2336,32 +2356,33 @@ async function bootstrap() {
           stopTicker();
           const compressionMessage =
             compressionError instanceof Error ? compressionError.message : "zstd compression failed";
+          const useRawFallback = await dialogs.confirm(
+            `Zstd compression failed: ${compressionMessage}\n\nDownload raw snapshot instead?`,
+            {
+              title: "Compression Failed",
+              okLabel: "Download Raw",
+              cancelLabel: "Cancel",
+            }
+          );
+          if (!useRawFallback) {
+            bus.emit("status", {
+              level: "error",
+              message: "Snapshot download cancelled.",
+            });
+            bus.emit("vm-progress", {
+              message: "VM: snapshot download cancelled.",
+              percent: 100,
+              visible: true,
+              autoHideMs: 1400,
+            });
+            return;
+          }
           bus.emit("status", {
             level: "info",
-            message: `Zstd compression unavailable (${compressionMessage}). Trying gzip...`,
+            message: `Zstd failed (${compressionMessage}). Downloading raw snapshot.`,
           });
-          stopTicker = startProgressTicker(bus, "VM: compressing snapshot (gzip)...", {
-            initial: 18,
-            max: 88,
-          });
-          try {
-            payload = await gzipCompressArrayBuffer(stateBuffer);
-            fileName = `mandelogue-vm-snapshot-${stamp}.bin.gz`;
-            stopTicker();
-            bus.emit("vm-progress", {
-              message: "VM: compression complete. Starting download...",
-              percent: 95,
-              visible: true,
-            });
-          } catch (gzipError) {
-            stopTicker();
-            bus.emit("status", {
-              level: "info",
-              message: "Compression unavailable. Downloading raw snapshot instead.",
-            });
-            payload = stateBuffer;
-            fileName = `mandelogue-vm-snapshot-${stamp}.bin`;
-          }
+          payload = stateBuffer;
+          fileName = `mandelogue-vm-snapshot-${stamp}.bin`;
         }
       }
 
