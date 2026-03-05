@@ -813,6 +813,38 @@ function downloadBinaryFile(fileName, payload) {
   }, 0);
 }
 
+const FZSTD_MODULE_URL = "https://cdn.jsdelivr.net/npm/fzstd@0.1.1/+esm";
+let fzstdModulePromise = null;
+
+async function loadFzstdModule() {
+  if (!fzstdModulePromise) {
+    fzstdModulePromise = import(FZSTD_MODULE_URL);
+  }
+  return fzstdModulePromise;
+}
+
+async function gzipCompressArrayBuffer(arrayBuffer) {
+  if (typeof CompressionStream !== "function") {
+    throw new Error("Gzip compression is not supported by this browser.");
+  }
+  const stream = new CompressionStream("gzip");
+  const writer = stream.writable.getWriter();
+  await writer.write(new Uint8Array(arrayBuffer));
+  await writer.close();
+  return new Response(stream.readable).arrayBuffer();
+}
+
+async function gzipDecompressArrayBuffer(arrayBuffer) {
+  if (typeof DecompressionStream !== "function") {
+    throw new Error("Gzip decompression is not supported by this browser.");
+  }
+  const stream = new DecompressionStream("gzip");
+  const writer = stream.writable.getWriter();
+  await writer.write(new Uint8Array(arrayBuffer));
+  await writer.close();
+  return new Response(stream.readable).arrayBuffer();
+}
+
 async function bootstrap() {
   const bus = new EventBus();
   const dom = {
@@ -2124,18 +2156,81 @@ async function bootstrap() {
   };
 
   const downloadVmSnapshot = async () => {
+    const mode = await dialogs.choose(
+      "Download snapshot format",
+      [
+        {
+          label: "Compressed (.bin.gz) (Recommended)",
+          value: "compressed",
+          primary: true,
+        },
+        {
+          label: "Raw (.bin)",
+          value: "raw",
+        },
+      ],
+      {
+        title: "Download VM Snapshot",
+      }
+    );
+    if (!mode) {
+      return;
+    }
+
     try {
+      bus.emit("vm-progress", {
+        message: "VM: preparing snapshot download...",
+        percent: 5,
+        visible: true,
+      });
       const stateBuffer = await vm.exportSnapshotBuffer();
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-      downloadBinaryFile(`mandelogue-vm-snapshot-${stamp}.bin`, stateBuffer);
+      let payload = stateBuffer;
+      let fileName = `mandelogue-vm-snapshot-${stamp}.bin`;
+
+      if (mode === "compressed") {
+        bus.emit("vm-progress", {
+          message: "VM: compressing snapshot (gzip)...",
+          percent: 65,
+          visible: true,
+        });
+        try {
+          payload = await gzipCompressArrayBuffer(stateBuffer);
+          fileName = `mandelogue-vm-snapshot-${stamp}.bin.gz`;
+          bus.emit("vm-progress", {
+            message: "VM: compression complete. Starting download...",
+            percent: 95,
+            visible: true,
+          });
+        } catch (compressionError) {
+          bus.emit("status", {
+            level: "info",
+            message: "Compression unavailable. Downloading raw snapshot instead.",
+          });
+        }
+      }
+
+      downloadBinaryFile(fileName, payload);
       bus.emit("status", {
         level: "info",
-        message: `Downloaded VM snapshot (${Math.round((stateBuffer.byteLength || 0) / 1024)} KB).`,
+        message: `Downloaded VM snapshot (${Math.round((payload.byteLength || 0) / 1024)} KB).`,
+      });
+      bus.emit("vm-progress", {
+        message: "VM: snapshot download ready.",
+        percent: 100,
+        visible: true,
+        autoHideMs: 1400,
       });
     } catch (error) {
       bus.emit("status", {
         level: "error",
         message: error instanceof Error ? error.message : "Could not download VM snapshot.",
+      });
+      bus.emit("vm-progress", {
+        message: "VM: snapshot download failed.",
+        percent: 100,
+        visible: true,
+        autoHideMs: 2200,
       });
     }
   };
@@ -2143,7 +2238,7 @@ async function bootstrap() {
   const uploadVmSnapshot = async () => {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = ".bin,.state,.snapshot,application/octet-stream";
+    input.accept = ".bin,.state,.snapshot,.gz,.zst,.zstd,.bin.gz,.bin.zst,.bin.zstd,application/octet-stream";
 
     const file = await new Promise((resolve) => {
       input.addEventListener(
@@ -2161,12 +2256,63 @@ async function bootstrap() {
     }
 
     try {
-      const buffer = await file.arrayBuffer();
+      let buffer = await file.arrayBuffer();
+      const lowerName = String(file.name || "").toLowerCase();
+
+      if (lowerName.endsWith(".gz") || lowerName.endsWith(".bin.gz")) {
+        bus.emit("vm-progress", {
+          message: `VM: decompressing ${file.name} (gzip)...`,
+          percent: 35,
+          visible: true,
+        });
+        buffer = await gzipDecompressArrayBuffer(buffer);
+      } else if (
+        lowerName.endsWith(".zst") ||
+        lowerName.endsWith(".zstd") ||
+        lowerName.endsWith(".bin.zst") ||
+        lowerName.endsWith(".bin.zstd")
+      ) {
+        bus.emit("vm-progress", {
+          message: `VM: decompressing ${file.name} (zstd)...`,
+          percent: 35,
+          visible: true,
+        });
+        const fzstd = await loadFzstdModule();
+        if (!fzstd || typeof fzstd.decompress !== "function") {
+          throw new Error("Zstd decompression module failed to load.");
+        }
+        const decompressed = fzstd.decompress(new Uint8Array(buffer));
+        if (!(decompressed instanceof Uint8Array) || decompressed.byteLength === 0) {
+          throw new Error("Invalid or empty zstd snapshot payload.");
+        }
+        buffer = decompressed.buffer.slice(
+          decompressed.byteOffset,
+          decompressed.byteOffset + decompressed.byteLength
+        );
+      }
+
+      bus.emit("vm-progress", {
+        message: `VM: importing ${file.name}...`,
+        percent: 70,
+        visible: true,
+      });
       await vm.importSnapshotBuffer(buffer, { sourceLabel: file.name || "snapshot file" });
+      bus.emit("vm-progress", {
+        message: "VM: snapshot upload complete.",
+        percent: 100,
+        visible: true,
+        autoHideMs: 1400,
+      });
     } catch (error) {
       bus.emit("status", {
         level: "error",
         message: error instanceof Error ? error.message : "Could not upload VM snapshot.",
+      });
+      bus.emit("vm-progress", {
+        message: "VM: snapshot upload failed.",
+        percent: 100,
+        visible: true,
+        autoHideMs: 2200,
       });
     }
   };
