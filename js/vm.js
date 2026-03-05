@@ -11,7 +11,7 @@ const DEFAULT_VM_CONFIG = {
   initialStateUrl: "",
   bundledDefaultSnapshotUrl: "./bin/default.bin",
   bundledDefaultSnapshotFallbackUrl:
-    "https://release-assets.githubusercontent.com/github-production-release-asset/1171642220/918ffc5a-3f30-4c88-b351-18dbddc924de?sp=r&sv=2018-11-09&sr=b&spr=https&se=2026-03-05T14%3A12%3A54Z&rscd=attachment%3B+filename%3Ddefault.bin&rsct=application%2Foctet-stream&skoid=96c2d410-5711-43a1-aedd-ab1947aa7ab0&sktid=398a6654-997b-47e9-b12b-9515b896b4de&skt=2026-03-05T13%3A12%3A28Z&ske=2026-03-05T14%3A12%3A54Z&sks=b&skv=2018-11-09&sig=ejG%2F7Tz6f3bHMN54Sj09HZf9y%2B9o8Pg3o6uAtY%2F5wj0%3D&jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmVsZWFzZS1hc3NldHMuZ2l0aHVidXNlcmNvbnRlbnQuY29tIiwia2V5Ijoia2V5MSIsImV4cCI6MTc3MjcyMDY3NiwibmJmIjoxNzcyNzE3MDc2LCJwYXRoIjoicmVsZWFzZWFzc2V0cHJvZHVjdGlvbi5ibG9iLmNvcmUud2luZG93cy5uZXQifQ.qXfo39T2BnDwQ89AomMl4i-ytiQUUrgdzatpdFVCnG4&response-content-disposition=attachment%3B%20filename%3Ddefault.bin&response-content-type=application%2Foctet-stream",
+    "https://github.com/MINTILER-DEV/Mandelogue/releases/latest/download/default.bin",
   filesystemBaseUrl: "https://i.copy.sh/arch/",
   filesystemIndexUrl: "https://i.copy.sh/fs.json",
   bootFromFilesystem: true,
