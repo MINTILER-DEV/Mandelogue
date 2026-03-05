@@ -813,10 +813,8 @@ function downloadBinaryFile(fileName, payload) {
   }, 0);
 }
 
-const ZSTD_WASM_WEB_MODULE_URL =
-  "https://cdn.jsdelivr.net/npm/@bokuweb/zstd-wasm@0.0.27/dist/web/index.web.js";
-const ZSTD_WASM_BINARY_URL =
-  "https://cdn.jsdelivr.net/npm/@bokuweb/zstd-wasm@0.0.27/dist/web/zstd.wasm";
+const ZSTD_WASM_WEB_MODULE_URL = new URL("./vendor/zstd-wasm/index.web.js", import.meta.url).href;
+const ZSTD_WASM_BINARY_URL = new URL("./vendor/zstd-wasm/zstd.wasm", import.meta.url).href;
 let zstdWorker = null;
 let zstdWorkerSeq = 0;
 const zstdPendingRequests = new Map();
