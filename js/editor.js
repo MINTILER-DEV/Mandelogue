@@ -94,7 +94,7 @@ function isRelativeToken(token) {
   if (!/[A-Za-z_]/.test(token)) {
     return false;
   }
-  if (!(token.startsWith("./") || token.startsWith("../") || token.includes("/"))) {
+  if (!(token.startsWith("./") || token.startsWith("../") || token.includes("/") || token.includes("."))) {
     return false;
   }
   return true;
@@ -124,7 +124,10 @@ function extractTokenAtColumn(line, column) {
 }
 
 function resolveRelativePath(basePath, token) {
-  const pathToken = token.split(/[?#]/, 1)[0];
+  let pathToken = String(token || "").trim();
+  pathToken = pathToken.replace(/^[("'`]+/, "").replace(/[)"'`,.;]+$/, "");
+  pathToken = pathToken.split(/[?#]/, 1)[0];
+  pathToken = pathToken.replace(/:\d+(?::\d+)?$/, "");
   if (!isRelativeToken(pathToken)) {
     return null;
   }
@@ -219,6 +222,11 @@ export class EditorService {
     this.disposables.push(
       this.editor.onMouseDown((event) => {
         if (!event?.event?.leftButton) {
+          return;
+        }
+        const browserEvent = event.event?.browserEvent || event.event;
+        const hasOpenModifier = Boolean(browserEvent && (browserEvent.ctrlKey || browserEvent.metaKey));
+        if (!hasOpenModifier) {
           return;
         }
         if (event.target.type !== this.monaco.editor.MouseTargetType.CONTENT_TEXT) {

@@ -110,6 +110,36 @@ function bytesToBase64(bytes) {
   return btoa(binary);
 }
 
+function base64ToBytes(base64Text) {
+  const binary = atob(base64Text || "");
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function cloneBytes(bytes) {
+  if (bytes instanceof Uint8Array) {
+    return bytes.slice();
+  }
+  if (ArrayBuffer.isView(bytes)) {
+    return new Uint8Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+  }
+  if (bytes instanceof ArrayBuffer) {
+    return new Uint8Array(bytes.slice(0));
+  }
+  return new Uint8Array(0);
+}
+
+function textToBytes(text) {
+  return new TextEncoder().encode(String(text ?? ""));
+}
+
+function bytesToText(bytes) {
+  return new TextDecoder().decode(bytes || new Uint8Array(0));
+}
+
 function createDeferredYield() {
   return new Promise((resolve) => {
     setTimeout(resolve, 0);
@@ -221,10 +251,13 @@ export class FileSystemService {
   constructor(bus, config = {}) {
     this.bus = bus;
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this.workspaceMode = "none";
     this.rootHandle = null;
     this.rootName = "";
     this.tree = null;
     this.fileHandleMap = new Map();
+    this.projectFileMap = new Map();
+    this.projectDirectorySet = new Set();
   }
 
   isSupported() {
@@ -232,6 +265,9 @@ export class FileSystemService {
   }
 
   hasOpenFolder() {
+    if (this.workspaceMode === "project") {
+      return Boolean(this.rootName);
+    }
     return Boolean(this.rootHandle);
   }
 
@@ -239,12 +275,31 @@ export class FileSystemService {
     return this.rootName;
   }
 
+  getWorkspaceMode() {
+    return this.workspaceMode;
+  }
+
+  isProjectMode() {
+    return this.workspaceMode === "project";
+  }
+
+  isDeviceFolderMode() {
+    return this.workspaceMode === "device";
+  }
+
   getTree() {
     return this.tree;
   }
 
   hasFileHandle(relativePath) {
-    return this.fileHandleMap.has(normalizePath(relativePath));
+    const normalized = normalizePath(relativePath);
+    if (!normalized) {
+      return false;
+    }
+    if (this.workspaceMode === "project") {
+      return this.projectFileMap.has(normalized);
+    }
+    return this.fileHandleMap.has(normalized);
   }
 
   getConfigSnapshot() {
@@ -282,11 +337,77 @@ export class FileSystemService {
     }
 
     const directoryHandle = await window.showDirectoryPicker({ mode: "readwrite" });
+    this.workspaceMode = "device";
     this.rootHandle = directoryHandle;
     this.rootName = directoryHandle.name;
     this.fileHandleMap.clear();
+    this.projectFileMap.clear();
+    this.projectDirectorySet.clear();
     this.tree = await this.scanDirectoryTree(directoryHandle);
     return { rootName: this.rootName, tree: this.tree };
+  }
+
+  openProject(projectName, files = []) {
+    const name = String(projectName || "").trim() || "Project";
+    this.workspaceMode = "project";
+    this.rootHandle = null;
+    this.rootName = name;
+    this.fileHandleMap.clear();
+    this.projectFileMap.clear();
+    this.projectDirectorySet.clear();
+
+    for (const entry of files) {
+      const relativePath = normalizePath(entry?.relativePath || entry?.path || "");
+      if (!relativePath) {
+        continue;
+      }
+      let bytes = null;
+      if (typeof entry?.base64 === "string") {
+        try {
+          bytes = base64ToBytes(entry.base64);
+        } catch (error) {
+          bytes = null;
+        }
+      } else if (entry?.bytes) {
+        bytes = cloneBytes(entry.bytes);
+      } else if (typeof entry?.content === "string") {
+        bytes = textToBytes(entry.content);
+      }
+      this.projectFileMap.set(relativePath, bytes || new Uint8Array(0));
+      this.ensureProjectParentDirectories(relativePath);
+    }
+
+    if (Array.isArray(files)) {
+      for (const entry of files) {
+        const rawDir = normalizePath(entry?.directoryPath || entry?.dir || "");
+        if (rawDir) {
+          this.projectDirectorySet.add(rawDir);
+        }
+      }
+    }
+
+    this.tree = this.buildProjectTreeFromPaths(
+      Array.from(this.projectFileMap.keys()),
+      Array.from(this.projectDirectorySet)
+    );
+    return { rootName: this.rootName, tree: this.tree };
+  }
+
+  createEmptyProject(projectName = "Project") {
+    return this.openProject(projectName, []);
+  }
+
+  ensureProjectParentDirectories(relativePath) {
+    if (this.workspaceMode !== "project") {
+      return;
+    }
+    const normalized = normalizePath(relativePath);
+    const segments = splitPath(normalized);
+    let cumulative = "";
+    for (let index = 0; index < segments.length - 1; index += 1) {
+      cumulative = cumulative ? `${cumulative}/${segments[index]}` : segments[index];
+      this.projectDirectorySet.add(cumulative);
+    }
   }
 
   async scanDirectoryTree(rootHandle) {
@@ -365,6 +486,13 @@ export class FileSystemService {
 
   async readFile(relativePath) {
     const normalized = normalizePath(relativePath);
+    if (this.workspaceMode === "project") {
+      const bytes = this.projectFileMap.get(normalized);
+      if (!bytes) {
+        throw new Error(`Cannot read missing file: ${normalized}`);
+      }
+      return bytesToText(bytes);
+    }
     const handle = this.fileHandleMap.get(normalized);
     if (!handle) {
       throw new Error(`Cannot read missing file: ${normalized}`);
@@ -374,11 +502,20 @@ export class FileSystemService {
   }
 
   async writeFile(relativePath, content) {
-    if (!this.rootHandle) {
+    if (!this.hasOpenFolder()) {
       throw new Error("No folder is currently open.");
     }
 
     const normalized = normalizePath(relativePath);
+    if (this.workspaceMode === "project") {
+      const existed = this.projectFileMap.has(normalized);
+      this.ensureProjectParentDirectories(normalized);
+      this.projectFileMap.set(normalized, textToBytes(content));
+      if (!existed) {
+        this.insertFileNode(normalized);
+      }
+      return;
+    }
     const existed = this.fileHandleMap.has(normalized);
     const fileHandle = await this.getOrCreateFileHandle(normalized);
     const writable = await fileHandle.createWritable();
@@ -390,11 +527,20 @@ export class FileSystemService {
   }
 
   async writeFileBytes(relativePath, bytes) {
-    if (!this.rootHandle) {
+    if (!this.hasOpenFolder()) {
       throw new Error("No folder is currently open.");
     }
 
     const normalized = normalizePath(relativePath);
+    if (this.workspaceMode === "project") {
+      const existed = this.projectFileMap.has(normalized);
+      this.ensureProjectParentDirectories(normalized);
+      this.projectFileMap.set(normalized, cloneBytes(bytes));
+      if (!existed) {
+        this.insertFileNode(normalized);
+      }
+      return;
+    }
     const existed = this.fileHandleMap.has(normalized);
     const fileHandle = await this.getOrCreateFileHandle(normalized);
     const writable = await fileHandle.createWritable();
@@ -406,18 +552,26 @@ export class FileSystemService {
   }
 
   async createFile(relativePath) {
-    if (!this.rootHandle) {
+    if (!this.hasOpenFolder()) {
       throw new Error("Open a folder before creating files.");
     }
 
     const normalized = normalizePath(relativePath);
+    if (this.workspaceMode === "project") {
+      this.ensureProjectParentDirectories(normalized);
+      if (!this.projectFileMap.has(normalized)) {
+        this.projectFileMap.set(normalized, new Uint8Array(0));
+      }
+      this.insertFileNode(normalized);
+      return normalized;
+    }
     await this.getOrCreateFileHandle(normalized);
     this.insertFileNode(normalized);
     return normalized;
   }
 
   async createFolder(relativePath) {
-    if (!this.rootHandle) {
+    if (!this.hasOpenFolder()) {
       throw new Error("Open a folder before creating folders.");
     }
 
@@ -426,13 +580,18 @@ export class FileSystemService {
       throw new Error("Folder path must not be empty.");
     }
 
+    if (this.workspaceMode === "project") {
+      this.projectDirectorySet.add(normalized);
+      this.insertDirectoryNode(normalized);
+      return normalized;
+    }
     await this.getOrCreateDirectoryHandle(normalized);
     this.insertDirectoryNode(normalized);
     return normalized;
   }
 
   async removeEntry(relativePath, options = {}) {
-    if (!this.rootHandle) {
+    if (!this.hasOpenFolder()) {
       throw new Error("No folder is currently open.");
     }
 
@@ -445,6 +604,25 @@ export class FileSystemService {
     const entryType = this.getEntryType(normalized);
     if (!entryType) {
       throw new Error(`Cannot remove missing path: ${normalized}`);
+    }
+
+    if (this.workspaceMode === "project") {
+      if (entryType === "file") {
+        this.projectFileMap.delete(normalized);
+      } else {
+        for (const key of Array.from(this.projectFileMap.keys())) {
+          if (key === normalized || key.startsWith(`${normalized}/`)) {
+            this.projectFileMap.delete(key);
+          }
+        }
+        for (const dirPath of Array.from(this.projectDirectorySet.values())) {
+          if (dirPath === normalized || dirPath.startsWith(`${normalized}/`)) {
+            this.projectDirectorySet.delete(dirPath);
+          }
+        }
+      }
+      this.removeNode(normalized);
+      return entryType;
     }
 
     const parent = parentPath(normalized);
@@ -465,6 +643,93 @@ export class FileSystemService {
     }
     this.removeNode(normalized);
     return entryType;
+  }
+
+  async renameEntry(oldRelativePath, newRelativePath) {
+    if (!this.hasOpenFolder()) {
+      throw new Error("No folder is currently open.");
+    }
+
+    const oldPath = normalizePath(oldRelativePath);
+    const newPath = normalizePath(newRelativePath);
+    if (!oldPath) {
+      throw new Error("Cannot rename the root folder.");
+    }
+    if (!newPath) {
+      throw new Error("New path must not be empty.");
+    }
+    if (oldPath === newPath) {
+      const entryType = this.getEntryType(oldPath);
+      if (!entryType) {
+        throw new Error(`Cannot rename missing path: ${oldPath}`);
+      }
+      return { type: entryType, oldPath, newPath };
+    }
+
+    const entryType = this.getEntryType(oldPath);
+    if (!entryType) {
+      throw new Error(`Cannot rename missing path: ${oldPath}`);
+    }
+    if (this.getEntryType(newPath)) {
+      throw new Error(`Cannot rename to existing path: ${newPath}`);
+    }
+    if (entryType === "directory" && newPath.startsWith(`${oldPath}/`)) {
+      throw new Error("Cannot move a folder into itself.");
+    }
+
+    if (this.workspaceMode === "project") {
+      if (entryType === "file") {
+        const bytes = this.projectFileMap.get(oldPath);
+        this.projectFileMap.delete(oldPath);
+        this.ensureProjectParentDirectories(newPath);
+        this.projectFileMap.set(newPath, bytes || new Uint8Array(0));
+      } else {
+        const moved = [];
+        for (const [path, bytes] of this.projectFileMap.entries()) {
+          if (path === oldPath || path.startsWith(`${oldPath}/`)) {
+            const suffix = path === oldPath ? "" : path.slice(oldPath.length + 1);
+            const rewritten = suffix ? `${newPath}/${suffix}` : newPath;
+            moved.push([path, rewritten, bytes]);
+          }
+        }
+        for (const [oldKey] of moved) {
+          this.projectFileMap.delete(oldKey);
+        }
+        for (const [, newKey, bytes] of moved) {
+          this.projectFileMap.set(newKey, bytes);
+        }
+        const movedDirs = [];
+        for (const dirPath of this.projectDirectorySet.values()) {
+          if (dirPath === oldPath || dirPath.startsWith(`${oldPath}/`)) {
+            const suffix = dirPath === oldPath ? "" : dirPath.slice(oldPath.length + 1);
+            const rewritten = suffix ? `${newPath}/${suffix}` : newPath;
+            movedDirs.push([dirPath, rewritten]);
+          }
+        }
+        for (const [oldDir] of movedDirs) {
+          this.projectDirectorySet.delete(oldDir);
+        }
+        for (const [, newDir] of movedDirs) {
+          this.projectDirectorySet.add(newDir);
+        }
+      }
+      this.tree = this.buildProjectTreeFromPaths(
+        Array.from(this.projectFileMap.keys()),
+        Array.from(this.projectDirectorySet)
+      );
+      return { type: entryType, oldPath, newPath };
+    }
+
+    if (entryType === "file") {
+      await this.renameFileEntry(oldPath, newPath);
+    } else {
+      await this.renameDirectoryEntry(oldPath, newPath);
+    }
+
+    // Re-scan once after rename to keep tree and handle map accurate.
+    this.fileHandleMap.clear();
+    this.tree = await this.scanDirectoryTree(this.rootHandle);
+    return { type: entryType, oldPath, newPath };
   }
 
   async getOrCreateFileHandle(relativePath) {
@@ -489,6 +754,19 @@ export class FileSystemService {
     return fileHandle;
   }
 
+  async getDirectoryHandle(relativePath) {
+    const normalized = normalizePath(relativePath);
+    if (!normalized) {
+      return this.rootHandle;
+    }
+    const segments = splitPath(normalized);
+    let directory = this.rootHandle;
+    for (const segment of segments) {
+      directory = await directory.getDirectoryHandle(segment);
+    }
+    return directory;
+  }
+
   async getOrCreateDirectoryHandle(relativePath) {
     const normalized = normalizePath(relativePath);
     if (!normalized) {
@@ -501,6 +779,173 @@ export class FileSystemService {
       directory = await directory.getDirectoryHandle(segment, { create: true });
     }
     return directory;
+  }
+
+  buildProjectTreeFromPaths(filePaths = [], directoryPaths = []) {
+    const tree = {
+      type: "directory",
+      name: this.rootName || "Project",
+      path: "",
+      children: [],
+    };
+    this.tree = tree;
+    const uniqueDirs = Array.from(new Set(directoryPaths.map((path) => normalizePath(path)).filter(Boolean)));
+    uniqueDirs.sort((left, right) => left.localeCompare(right));
+    for (const directoryPath of uniqueDirs) {
+      this.insertDirectoryNode(directoryPath);
+    }
+    for (const path of filePaths) {
+      const normalized = normalizePath(path);
+      if (!normalized) {
+        continue;
+      }
+      this.insertFileNode(normalized);
+    }
+    return tree;
+  }
+
+  async exportMlpPayload() {
+    if (!this.hasOpenFolder()) {
+      throw new Error("No folder or project is currently open.");
+    }
+
+    let entries = [];
+    if (this.workspaceMode === "project") {
+      entries = Array.from(this.projectFileMap.entries()).map(([relativePath, bytes]) => ({
+        path: relativePath,
+        base64: bytesToBase64(bytes),
+      }));
+    } else {
+      entries = [];
+      for (const [relativePath, handle] of this.fileHandleMap.entries()) {
+        try {
+          const file = await handle.getFile();
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          entries.push({
+            path: relativePath,
+            base64: bytesToBase64(bytes),
+          });
+        } catch (error) {
+          // Skip unreadable files while exporting project payload.
+        }
+      }
+    }
+
+    entries.sort((left, right) => left.path.localeCompare(right.path));
+    const directoryPaths = this.collectDirectoryPathsFromTree(this.tree);
+    for (const dirPath of this.projectDirectorySet.values()) {
+      directoryPaths.add(normalizePath(dirPath));
+    }
+
+    return {
+      format: "mlp",
+      version: 1,
+      rootName: this.rootName || "Project",
+      createdAt: Date.now(),
+      directories: Array.from(directoryPaths).filter(Boolean).sort((a, b) => a.localeCompare(b)),
+      files: entries,
+    };
+  }
+
+  openMlpPayload(payload) {
+    if (!payload || typeof payload !== "object") {
+      throw new Error("Invalid Mandelogue project file.");
+    }
+    if (payload.format !== "mlp") {
+      throw new Error("Unsupported project format.");
+    }
+    if (Number(payload.version) !== 1) {
+      throw new Error("Unsupported Mandelogue project version.");
+    }
+
+    const files = Array.isArray(payload.files) ? payload.files : [];
+    const directories = Array.isArray(payload.directories)
+      ? payload.directories.map((dir) => ({
+          directoryPath: dir,
+        }))
+      : [];
+    return this.openProject(payload.rootName || "Project", [...files, ...directories]);
+  }
+
+  collectDirectoryPathsFromTree(node) {
+    const result = new Set();
+    const visit = (current) => {
+      if (!current || current.type !== "directory") {
+        return;
+      }
+      const normalized = normalizePath(current.path || "");
+      if (normalized) {
+        result.add(normalized);
+      }
+      if (!Array.isArray(current.children)) {
+        return;
+      }
+      for (const child of current.children) {
+        if (child.type === "directory") {
+          visit(child);
+        }
+      }
+    };
+    visit(node);
+    return result;
+  }
+
+  async renameFileEntry(oldPath, newPath) {
+    const sourceHandle = this.fileHandleMap.get(oldPath);
+    if (!sourceHandle) {
+      throw new Error(`Cannot rename missing file: ${oldPath}`);
+    }
+
+    const targetParentPath = parentPath(newPath);
+    const targetName = getBasename(newPath);
+    const targetParentHandle = targetParentPath
+      ? await this.getOrCreateDirectoryHandle(targetParentPath)
+      : this.rootHandle;
+    const targetHandle = await targetParentHandle.getFileHandle(targetName, { create: true });
+    await this.copyFileHandleContents(sourceHandle, targetHandle);
+
+    const sourceParentPath = parentPath(oldPath);
+    const sourceName = getBasename(oldPath);
+    const sourceParentHandle = sourceParentPath
+      ? await this.getDirectoryHandle(sourceParentPath)
+      : this.rootHandle;
+    await sourceParentHandle.removeEntry(sourceName, { recursive: false });
+  }
+
+  async renameDirectoryEntry(oldPath, newPath) {
+    const sourceDirectoryHandle = await this.getDirectoryHandle(oldPath);
+    const targetDirectoryHandle = await this.getOrCreateDirectoryHandle(newPath);
+    await this.copyDirectoryContents(sourceDirectoryHandle, targetDirectoryHandle);
+
+    const sourceParentPath = parentPath(oldPath);
+    const sourceName = getBasename(oldPath);
+    const sourceParentHandle = sourceParentPath
+      ? await this.getDirectoryHandle(sourceParentPath)
+      : this.rootHandle;
+    await sourceParentHandle.removeEntry(sourceName, { recursive: true });
+  }
+
+  async copyDirectoryContents(sourceDirectoryHandle, targetDirectoryHandle) {
+    const queue = [{ source: sourceDirectoryHandle, target: targetDirectoryHandle }];
+    while (queue.length > 0) {
+      const current = queue.shift();
+      for await (const [name, handle] of current.source.entries()) {
+        if (handle.kind === "directory") {
+          const targetChild = await current.target.getDirectoryHandle(name, { create: true });
+          queue.push({ source: handle, target: targetChild });
+          continue;
+        }
+        const targetFile = await current.target.getFileHandle(name, { create: true });
+        await this.copyFileHandleContents(handle, targetFile);
+      }
+    }
+  }
+
+  async copyFileHandleContents(sourceFileHandle, targetFileHandle) {
+    const file = await sourceFileHandle.getFile();
+    const writable = await targetFileHandle.createWritable();
+    await writable.write(await file.arrayBuffer());
+    await writable.close();
   }
 
   insertFileNode(relativePath) {
@@ -620,6 +1065,9 @@ export class FileSystemService {
     if (!normalized) {
       return "directory";
     }
+    if (this.workspaceMode === "project" && this.projectFileMap.has(normalized)) {
+      return "file";
+    }
     if (this.fileHandleMap.has(normalized)) {
       return "file";
     }
@@ -631,23 +1079,32 @@ export class FileSystemService {
   }
 
   getMountIgnoreReason(relativePath) {
-    const rules = buildMountIgnoreRules(Array.from(this.fileHandleMap.keys()));
+    const allPaths =
+      this.workspaceMode === "project"
+        ? Array.from(this.projectFileMap.keys())
+        : Array.from(this.fileHandleMap.keys());
+    const rules = buildMountIgnoreRules(allPaths);
     return shouldIgnoreMountPath(relativePath, rules);
   }
 
   async collectMountableFiles() {
     const files = [];
     const skipped = [];
-    const entries = Array.from(this.fileHandleMap.entries()).sort((left, right) =>
-      left[0].localeCompare(right[0])
-    );
+    const entries =
+      this.workspaceMode === "project"
+        ? Array.from(this.projectFileMap.entries()).sort((left, right) =>
+            left[0].localeCompare(right[0])
+          )
+        : Array.from(this.fileHandleMap.entries()).sort((left, right) =>
+            left[0].localeCompare(right[0])
+          );
     const ignoreRules = buildMountIgnoreRules(entries.map(([relativePath]) => relativePath));
     let limitedCount = 0;
     let limitedByTotalBytesCount = 0;
     let mountedBytes = 0;
 
     for (let index = 0; index < entries.length; index += 1) {
-      const [relativePath, handle] = entries[index];
+      const [relativePath, source] = entries[index];
       try {
         const ignoredReason = shouldIgnoreMountPath(relativePath, ignoreRules);
         if (ignoredReason) {
@@ -663,27 +1120,33 @@ export class FileSystemService {
           continue;
         }
 
-        const file = await handle.getFile();
-        if (file.size > this.config.maxMountFileBytes) {
+        let bytes = null;
+        if (this.workspaceMode === "project") {
+          bytes = cloneBytes(source);
+        } else {
+          const file = await source.getFile();
+          bytes = new Uint8Array(await file.arrayBuffer());
+        }
+        const fileSize = bytes.byteLength;
+
+        if (fileSize > this.config.maxMountFileBytes) {
           skipped.push({
             path: relativePath,
             reason: `Skipped files larger than ${this.config.maxMountFileBytes} bytes.`,
           });
           continue;
         }
-        if (mountedBytes + file.size > this.config.maxMountTotalBytes) {
+        if (mountedBytes + fileSize > this.config.maxMountTotalBytes) {
           limitedByTotalBytesCount += 1;
           continue;
         }
 
-        const buffer = await file.arrayBuffer();
-        const bytes = new Uint8Array(buffer);
         files.push({
           relativePath,
           base64: bytesToBase64(bytes),
-          bytes: file.size,
+          bytes: fileSize,
         });
-        mountedBytes += file.size;
+        mountedBytes += fileSize;
       } catch (error) {
         skipped.push({
           path: relativePath,

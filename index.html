@@ -92,23 +92,54 @@
         aria-label="Resize terminal"
         tabindex="0"
       ></div>
-      <div id="terminal" class="terminal-host">
-        <div id="terminal-mount-overlay" class="terminal-mount-overlay" aria-hidden="true">
-          <div class="terminal-mount-title">Mounting Project Into VM...</div>
-          <div id="terminal-mount-text" class="terminal-mount-text">Preparing file list...</div>
-          <div class="terminal-mount-progress-track">
-            <div id="terminal-mount-progress-fill" class="terminal-mount-progress-fill"></div>
-          </div>
-        </div>
-      </div>
+      <div id="terminal" class="terminal-host"></div>
     </section>
 
     <footer id="bottom-bar" class="bottom-bar" aria-live="polite">
       <span id="bottom-vm" class="bottom-item">VM: waiting...</span>
       <span id="bottom-folder" class="bottom-item">Folder: none</span>
       <span id="bottom-tabs" class="bottom-item">Tabs: 0</span>
+      <div id="bottom-mount" class="bottom-mount" data-open="false" aria-hidden="true">
+        <span id="bottom-mount-text" class="bottom-mount-text">Mount idle</span>
+        <div class="bottom-mount-track">
+          <div id="bottom-mount-fill" class="bottom-mount-fill"></div>
+        </div>
+      </div>
       <span id="bottom-terminal" class="bottom-item">Term: -</span>
     </footer>
+
+    <aside id="right-sidebar" class="right-sidebar" aria-label="Sidebar tools">
+      <button
+        id="right-devtools-toggle"
+        class="right-icon-button"
+        type="button"
+        title="Devtools"
+        aria-label="Open Devtools"
+      >&lt;/&gt;</button>
+    </aside>
+
+    <section id="devtools-panel" class="devtools-panel" aria-label="Devtools panel" aria-hidden="true">
+      <header class="devtools-header">
+        <span class="devtools-title">Devtools</span>
+        <div class="devtools-header-actions">
+          <button
+            id="devtools-clear"
+            class="right-icon-button"
+            type="button"
+            title="Clear log"
+            aria-label="Clear command log"
+          >⌫</button>
+          <button
+            id="devtools-close"
+            class="right-icon-button"
+            type="button"
+            title="Close"
+            aria-label="Close Devtools"
+          >×</button>
+        </div>
+      </header>
+      <div id="devtools-command-log" class="devtools-command-log"></div>
+    </section>
   </div>
 
   <div id="vm-screen" class="vm-screen" aria-hidden="true"></div>
