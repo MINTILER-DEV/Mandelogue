@@ -10,8 +10,7 @@ const DEFAULT_VM_CONFIG = {
   // Keep blank by default: some hosts hotlink-block or return incompatible state blobs.
   initialStateUrl: "",
   bundledDefaultSnapshotUrl: "./bin/default.bin",
-  bundledDefaultSnapshotFallbackUrl:
-    "https://github.com/MINTILER-DEV/Mandelogue/releases/latest/download/default.bin",
+  bundledDefaultSnapshotFallbackUrl: "",
   filesystemBaseUrl: "https://i.copy.sh/arch/",
   filesystemIndexUrl: "https://i.copy.sh/fs.json",
   bootFromFilesystem: true,
@@ -167,8 +166,6 @@ async function resolveBundledSnapshotUrl(primaryUrl, fallbackUrl = "") {
     try {
       const response = await fetch(candidate, {
         method: "HEAD",
-        mode: "cors",
-        redirect: "follow",
         cache: "no-store",
       });
       if (response.ok || response.status === 405) {
@@ -179,7 +176,7 @@ async function resolveBundledSnapshotUrl(primaryUrl, fallbackUrl = "") {
     }
   }
 
-  return candidates[0];
+  return "";
 }
 
 async function awaitIfPromise(value) {
