@@ -7,15 +7,15 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
         step((generator = generator.apply(thisArg, _arguments || [])).next());
     });
 };
-import { Module, waitInitialized } from './module';
+import { Module, waitInitialized } from './module.js';
 export const init = (path) => __awaiter(void 0, void 0, void 0, function* () {
     // @ts-ignore
     const url = new URL(`./zstd.wasm`, import.meta.url).href;
     Module['init'](path !== null && path !== void 0 ? path : url);
     yield waitInitialized();
 });
-export * from './simple/decompress';
-export * from './simple/compress';
-export * from './simple/decompress_using_dict';
-export * from './simple/compress_using_dict';
+export * from './simple/decompress.js';
+export * from './simple/compress.js';
+export * from './simple/decompress_using_dict.js';
+export * from './simple/compress_using_dict.js';
 //# sourceMappingURL=index.web.js.map

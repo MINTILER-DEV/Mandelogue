@@ -1,5 +1,5 @@
-import { Module } from '../module';
-import { isError } from '../errors';
+import { Module } from '../module.js';
+import { isError } from '../errors/index.js';
 const getFrameContentSize = (src, size) => {
     const getSize = Module['_ZSTD_getFrameContentSize'];
     return getSize(src, size);

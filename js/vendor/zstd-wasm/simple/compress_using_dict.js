@@ -1,5 +1,5 @@
-import { Module } from '../module';
-import { isError } from '../errors';
+import { Module } from '../module.js';
+import { isError } from '../errors/index.js';
 const compressBound = (size) => {
     const bound = Module['_ZSTD_compressBound'];
     return bound(size);
