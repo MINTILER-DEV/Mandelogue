@@ -813,14 +813,163 @@ function downloadBinaryFile(fileName, payload) {
   }, 0);
 }
 
-const FZSTD_MODULE_URL = "https://cdn.jsdelivr.net/npm/fzstd@0.1.1/+esm";
-let fzstdModulePromise = null;
+const ZSTD_WASM_WEB_MODULE_URL =
+  "https://cdn.jsdelivr.net/npm/@bokuweb/zstd-wasm@0.0.27/dist/web/index.web.js";
+let zstdWorker = null;
+let zstdWorkerObjectUrl = null;
+let zstdWorkerSeq = 0;
+const zstdPendingRequests = new Map();
 
-async function loadFzstdModule() {
-  if (!fzstdModulePromise) {
-    fzstdModulePromise = import(FZSTD_MODULE_URL);
+function getZstdWorker() {
+  if (zstdWorker) {
+    return zstdWorker;
   }
-  return fzstdModulePromise;
+
+  const workerSource = `
+const ZSTD_MODULE_URL = ${JSON.stringify(ZSTD_WASM_WEB_MODULE_URL)};
+let apiPromise = null;
+
+async function getApi() {
+  if (!apiPromise) {
+    apiPromise = import(ZSTD_MODULE_URL).then(async (mod) => {
+      await mod.init();
+      return mod;
+    });
+  }
+  return apiPromise;
+}
+
+self.onmessage = async (event) => {
+  const data = event.data || {};
+  const id = data.id;
+  const operation = data.operation;
+  const inputBuffer = data.buffer;
+  const level = data.level;
+  if (!id || !inputBuffer) {
+    return;
+  }
+
+  try {
+    const api = await getApi();
+    const input = new Uint8Array(inputBuffer);
+    let output = null;
+    if (operation === "compress") {
+      output = api.compress(input, Number.isFinite(level) ? level : 1);
+    } else if (operation === "decompress") {
+      output = api.decompress(input);
+    } else {
+      throw new Error("Unsupported zstd worker operation.");
+    }
+    if (!(output instanceof Uint8Array)) {
+      throw new Error("zstd worker returned invalid output.");
+    }
+    self.postMessage(
+      {
+        id,
+        ok: true,
+        buffer: output.buffer,
+        byteOffset: output.byteOffset,
+        byteLength: output.byteLength,
+      },
+      [output.buffer]
+    );
+  } catch (error) {
+    self.postMessage({
+      id,
+      ok: false,
+      error: error && error.message ? error.message : String(error),
+    });
+  }
+};
+`;
+
+  zstdWorkerObjectUrl = URL.createObjectURL(
+    new Blob([workerSource], { type: "text/javascript;charset=utf-8" })
+  );
+  zstdWorker = new Worker(zstdWorkerObjectUrl, { type: "module" });
+
+  zstdWorker.addEventListener("message", (event) => {
+    const data = event.data || {};
+    const id = data.id;
+    if (!id || !zstdPendingRequests.has(id)) {
+      return;
+    }
+    const pending = zstdPendingRequests.get(id);
+    zstdPendingRequests.delete(id);
+    if (!data.ok) {
+      pending.reject(new Error(data.error || "zstd worker operation failed."));
+      return;
+    }
+    const rawBuffer = data.buffer;
+    const byteOffset = Number(data.byteOffset) || 0;
+    const byteLength = Number(data.byteLength) || 0;
+    if (!(rawBuffer instanceof ArrayBuffer) || byteLength <= 0) {
+      pending.reject(new Error("zstd worker returned empty output."));
+      return;
+    }
+    pending.resolve(rawBuffer.slice(byteOffset, byteOffset + byteLength));
+  });
+
+  zstdWorker.addEventListener("error", (event) => {
+    const message = event?.message || "zstd worker crashed.";
+    for (const pending of zstdPendingRequests.values()) {
+      pending.reject(new Error(message));
+    }
+    zstdPendingRequests.clear();
+    try {
+      zstdWorker.terminate();
+    } catch (error) {
+      // Ignore terminate errors.
+    }
+    zstdWorker = null;
+    if (zstdWorkerObjectUrl) {
+      URL.revokeObjectURL(zstdWorkerObjectUrl);
+      zstdWorkerObjectUrl = null;
+    }
+  });
+
+  return zstdWorker;
+}
+
+async function runZstdWorkerOperation(operation, arrayBuffer, options = {}) {
+  const worker = getZstdWorker();
+  const requestId = `zstd_${Date.now().toString(36)}_${(zstdWorkerSeq += 1).toString(36)}`;
+  return new Promise((resolve, reject) => {
+    zstdPendingRequests.set(requestId, { resolve, reject });
+    worker.postMessage({
+      id: requestId,
+      operation,
+      buffer: arrayBuffer,
+      level: Number(options.level) || 1,
+    });
+  });
+}
+
+async function zstdCompressArrayBuffer(arrayBuffer, level = 1) {
+  return runZstdWorkerOperation("compress", arrayBuffer, { level });
+}
+
+async function zstdDecompressArrayBuffer(arrayBuffer) {
+  return runZstdWorkerOperation("decompress", arrayBuffer, {});
+}
+
+function disposeZstdWorker() {
+  for (const pending of zstdPendingRequests.values()) {
+    pending.reject(new Error("zstd worker disposed."));
+  }
+  zstdPendingRequests.clear();
+  if (zstdWorker) {
+    try {
+      zstdWorker.terminate();
+    } catch (error) {
+      // Ignore terminate errors.
+    }
+    zstdWorker = null;
+  }
+  if (zstdWorkerObjectUrl) {
+    URL.revokeObjectURL(zstdWorkerObjectUrl);
+    zstdWorkerObjectUrl = null;
+  }
 }
 
 async function gzipCompressArrayBuffer(arrayBuffer) {
@@ -843,6 +992,32 @@ async function gzipDecompressArrayBuffer(arrayBuffer) {
   await writer.write(new Uint8Array(arrayBuffer));
   await writer.close();
   return new Response(stream.readable).arrayBuffer();
+}
+
+function startProgressTicker(bus, message, options = {}) {
+  const initial = Number.isFinite(options.initial) ? options.initial : 10;
+  const max = Number.isFinite(options.max) ? options.max : 92;
+  let percent = Math.max(0, Math.min(max, initial));
+
+  bus.emit("vm-progress", {
+    message,
+    percent,
+    visible: true,
+  });
+
+  const timer = setInterval(() => {
+    const step = percent < 50 ? 6 : percent < 75 ? 4 : 2;
+    percent = Math.min(max, percent + step);
+    bus.emit("vm-progress", {
+      message,
+      percent,
+      visible: true,
+    });
+  }, 300);
+
+  return () => {
+    clearInterval(timer);
+  };
 }
 
 async function bootstrap() {
@@ -2160,7 +2335,7 @@ async function bootstrap() {
       "Download snapshot format",
       [
         {
-          label: "Compressed (.bin.gz) (Recommended)",
+          label: "Compressed (.bin.zst) (Recommended)",
           value: "compressed",
           primary: true,
         },
@@ -2189,24 +2364,47 @@ async function bootstrap() {
       let fileName = `mandelogue-vm-snapshot-${stamp}.bin`;
 
       if (mode === "compressed") {
-        bus.emit("vm-progress", {
-          message: "VM: compressing snapshot (gzip)...",
-          percent: 65,
-          visible: true,
+        let stopTicker = startProgressTicker(bus, "VM: compressing snapshot (zstd)...", {
+          initial: 18,
+          max: 90,
         });
         try {
-          payload = await gzipCompressArrayBuffer(stateBuffer);
-          fileName = `mandelogue-vm-snapshot-${stamp}.bin.gz`;
+          payload = await zstdCompressArrayBuffer(stateBuffer, 1);
+          fileName = `mandelogue-vm-snapshot-${stamp}.bin.zst`;
+          stopTicker();
           bus.emit("vm-progress", {
             message: "VM: compression complete. Starting download...",
             percent: 95,
             visible: true,
           });
         } catch (compressionError) {
+          stopTicker();
           bus.emit("status", {
             level: "info",
-            message: "Compression unavailable. Downloading raw snapshot instead.",
+            message: "Zstd compression unavailable. Trying gzip compression...",
           });
+          stopTicker = startProgressTicker(bus, "VM: compressing snapshot (gzip)...", {
+            initial: 18,
+            max: 88,
+          });
+          try {
+            payload = await gzipCompressArrayBuffer(stateBuffer);
+            fileName = `mandelogue-vm-snapshot-${stamp}.bin.gz`;
+            stopTicker();
+            bus.emit("vm-progress", {
+              message: "VM: compression complete. Starting download...",
+              percent: 95,
+              visible: true,
+            });
+          } catch (gzipError) {
+            stopTicker();
+            bus.emit("status", {
+              level: "info",
+              message: "Compression unavailable. Downloading raw snapshot instead.",
+            });
+            payload = stateBuffer;
+            fileName = `mandelogue-vm-snapshot-${stamp}.bin`;
+          }
         }
       }
 
@@ -2260,35 +2458,38 @@ async function bootstrap() {
       const lowerName = String(file.name || "").toLowerCase();
 
       if (lowerName.endsWith(".gz") || lowerName.endsWith(".bin.gz")) {
-        bus.emit("vm-progress", {
-          message: `VM: decompressing ${file.name} (gzip)...`,
-          percent: 35,
-          visible: true,
-        });
-        buffer = await gzipDecompressArrayBuffer(buffer);
+        const stopTicker = startProgressTicker(
+          bus,
+          `VM: decompressing ${file.name} (gzip)...`,
+          {
+            initial: 18,
+            max: 82,
+          }
+        );
+        try {
+          buffer = await gzipDecompressArrayBuffer(buffer);
+        } finally {
+          stopTicker();
+        }
       } else if (
         lowerName.endsWith(".zst") ||
         lowerName.endsWith(".zstd") ||
         lowerName.endsWith(".bin.zst") ||
         lowerName.endsWith(".bin.zstd")
       ) {
-        bus.emit("vm-progress", {
-          message: `VM: decompressing ${file.name} (zstd)...`,
-          percent: 35,
-          visible: true,
-        });
-        const fzstd = await loadFzstdModule();
-        if (!fzstd || typeof fzstd.decompress !== "function") {
-          throw new Error("Zstd decompression module failed to load.");
-        }
-        const decompressed = fzstd.decompress(new Uint8Array(buffer));
-        if (!(decompressed instanceof Uint8Array) || decompressed.byteLength === 0) {
-          throw new Error("Invalid or empty zstd snapshot payload.");
-        }
-        buffer = decompressed.buffer.slice(
-          decompressed.byteOffset,
-          decompressed.byteOffset + decompressed.byteLength
+        const stopTicker = startProgressTicker(
+          bus,
+          `VM: decompressing ${file.name} (zstd)...`,
+          {
+            initial: 18,
+            max: 82,
+          }
         );
+        try {
+          buffer = await zstdDecompressArrayBuffer(buffer);
+        } finally {
+          stopTicker();
+        }
       }
 
       bus.emit("vm-progress", {
@@ -3955,6 +4156,7 @@ async function bootstrap() {
     terminal.dispose();
     vm.dispose();
     vmHttpProxy.dispose();
+    disposeZstdWorker();
     topbar.dispose();
     contextMenu.dispose();
   };
