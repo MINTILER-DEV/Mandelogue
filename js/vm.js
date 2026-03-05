@@ -10,7 +10,8 @@ const DEFAULT_VM_CONFIG = {
   // Keep blank by default: some hosts hotlink-block or return incompatible state blobs.
   initialStateUrl: "",
   bundledDefaultSnapshotUrl: "./bin/default.bin",
-  bundledDefaultSnapshotFallbackUrl: "./bin/devault.bin",
+  bundledDefaultSnapshotFallbackUrl:
+    "https://github.com/MINTILER-DEV/Mandelogue/releases/latest/download/default.bin?raw=true",
   filesystemBaseUrl: "https://i.copy.sh/arch/",
   filesystemIndexUrl: "https://i.copy.sh/fs.json",
   bootFromFilesystem: true,
