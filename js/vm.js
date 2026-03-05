@@ -11,7 +11,7 @@ const DEFAULT_VM_CONFIG = {
   initialStateUrl: "",
   bundledDefaultSnapshotUrl: "./bin/default.bin",
   bundledDefaultSnapshotFallbackUrl:
-    "https://github.com/MINTILER-DEV/Mandelogue/releases/latest/download/default.bin?raw=true",
+    "https://github.com/MINTILER-DEV/Mandelogue/releases/latest/download/default.bin",
   filesystemBaseUrl: "https://i.copy.sh/arch/",
   filesystemIndexUrl: "https://i.copy.sh/fs.json",
   bootFromFilesystem: true,
@@ -167,6 +167,8 @@ async function resolveBundledSnapshotUrl(primaryUrl, fallbackUrl = "") {
     try {
       const response = await fetch(candidate, {
         method: "HEAD",
+        mode: "cors",
+        redirect: "follow",
         cache: "no-store",
       });
       if (response.ok || response.status === 405) {
