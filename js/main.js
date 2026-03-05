@@ -815,78 +815,19 @@ function downloadBinaryFile(fileName, payload) {
 
 const ZSTD_WASM_WEB_MODULE_URL =
   "https://cdn.jsdelivr.net/npm/@bokuweb/zstd-wasm@0.0.27/dist/web/index.web.js";
+const ZSTD_WASM_BINARY_URL =
+  "https://cdn.jsdelivr.net/npm/@bokuweb/zstd-wasm@0.0.27/dist/web/zstd.wasm";
 let zstdWorker = null;
-let zstdWorkerObjectUrl = null;
 let zstdWorkerSeq = 0;
 const zstdPendingRequests = new Map();
+const ZSTD_WORKER_TIMEOUT_MS = 150000;
 
 function getZstdWorker() {
   if (zstdWorker) {
     return zstdWorker;
   }
-
-  const workerSource = `
-const ZSTD_MODULE_URL = ${JSON.stringify(ZSTD_WASM_WEB_MODULE_URL)};
-let apiPromise = null;
-
-async function getApi() {
-  if (!apiPromise) {
-    apiPromise = import(ZSTD_MODULE_URL).then(async (mod) => {
-      await mod.init();
-      return mod;
-    });
-  }
-  return apiPromise;
-}
-
-self.onmessage = async (event) => {
-  const data = event.data || {};
-  const id = data.id;
-  const operation = data.operation;
-  const inputBuffer = data.buffer;
-  const level = data.level;
-  if (!id || !inputBuffer) {
-    return;
-  }
-
-  try {
-    const api = await getApi();
-    const input = new Uint8Array(inputBuffer);
-    let output = null;
-    if (operation === "compress") {
-      output = api.compress(input, Number.isFinite(level) ? level : 1);
-    } else if (operation === "decompress") {
-      output = api.decompress(input);
-    } else {
-      throw new Error("Unsupported zstd worker operation.");
-    }
-    if (!(output instanceof Uint8Array)) {
-      throw new Error("zstd worker returned invalid output.");
-    }
-    self.postMessage(
-      {
-        id,
-        ok: true,
-        buffer: output.buffer,
-        byteOffset: output.byteOffset,
-        byteLength: output.byteLength,
-      },
-      [output.buffer]
-    );
-  } catch (error) {
-    self.postMessage({
-      id,
-      ok: false,
-      error: error && error.message ? error.message : String(error),
-    });
-  }
-};
-`;
-
-  zstdWorkerObjectUrl = URL.createObjectURL(
-    new Blob([workerSource], { type: "text/javascript;charset=utf-8" })
-  );
-  zstdWorker = new Worker(zstdWorkerObjectUrl, { type: "module" });
+  const workerUrl = new URL("./zstd-worker.js", import.meta.url);
+  zstdWorker = new Worker(workerUrl, { type: "module" });
 
   zstdWorker.addEventListener("message", (event) => {
     const data = event.data || {};
@@ -922,10 +863,12 @@ self.onmessage = async (event) => {
       // Ignore terminate errors.
     }
     zstdWorker = null;
-    if (zstdWorkerObjectUrl) {
-      URL.revokeObjectURL(zstdWorkerObjectUrl);
-      zstdWorkerObjectUrl = null;
-    }
+  });
+
+  zstdWorker.postMessage({
+    type: "init",
+    moduleUrl: ZSTD_WASM_WEB_MODULE_URL,
+    wasmUrl: ZSTD_WASM_BINARY_URL,
   });
 
   return zstdWorker;
@@ -935,7 +878,21 @@ async function runZstdWorkerOperation(operation, arrayBuffer, options = {}) {
   const worker = getZstdWorker();
   const requestId = `zstd_${Date.now().toString(36)}_${(zstdWorkerSeq += 1).toString(36)}`;
   return new Promise((resolve, reject) => {
-    zstdPendingRequests.set(requestId, { resolve, reject });
+    const timeoutId = setTimeout(() => {
+      zstdPendingRequests.delete(requestId);
+      reject(new Error("zstd operation timed out."));
+    }, ZSTD_WORKER_TIMEOUT_MS);
+
+    zstdPendingRequests.set(requestId, {
+      resolve: (value) => {
+        clearTimeout(timeoutId);
+        resolve(value);
+      },
+      reject: (error) => {
+        clearTimeout(timeoutId);
+        reject(error);
+      },
+    });
     worker.postMessage({
       id: requestId,
       operation,
@@ -965,10 +922,6 @@ function disposeZstdWorker() {
       // Ignore terminate errors.
     }
     zstdWorker = null;
-  }
-  if (zstdWorkerObjectUrl) {
-    URL.revokeObjectURL(zstdWorkerObjectUrl);
-    zstdWorkerObjectUrl = null;
   }
 }
 
@@ -1006,7 +959,9 @@ function startProgressTicker(bus, message, options = {}) {
   });
 
   const timer = setInterval(() => {
-    const step = percent < 50 ? 6 : percent < 75 ? 4 : 2;
+    // Keep moving near the end instead of freezing at a hard cap.
+    const remaining = Math.max(0, max - percent);
+    const step = Math.max(0.25, remaining * 0.08);
     percent = Math.min(max, percent + step);
     bus.emit("vm-progress", {
       message,
@@ -2379,9 +2334,11 @@ async function bootstrap() {
           });
         } catch (compressionError) {
           stopTicker();
+          const compressionMessage =
+            compressionError instanceof Error ? compressionError.message : "zstd compression failed";
           bus.emit("status", {
             level: "info",
-            message: "Zstd compression unavailable. Trying gzip compression...",
+            message: `Zstd compression unavailable (${compressionMessage}). Trying gzip...`,
           });
           stopTicker = startProgressTicker(bus, "VM: compressing snapshot (gzip)...", {
             initial: 18,
