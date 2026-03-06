@@ -10,7 +10,7 @@ const DEFAULT_VM_CONFIG = {
   // Keep blank by default: some hosts hotlink-block or return incompatible state blobs.
   initialStateUrl: "",
   bundledDefaultSnapshotUrl: "./bin/default.bin",
-  bundledDefaultSnapshotFallbackUrl: "",
+  bundledDefaultSnapshotFallbackUrl: "https://www.dropbox.com/scl/fi/auqo2nibp7eenx29b2dcc/cmakesnapshotcomp.bin.zst?rlkey=2172v6fybh7zg1uybt767e1ej&st=smhlhaf7&dl=1",
   filesystemBaseUrl: "https://i.copy.sh/arch/",
   filesystemIndexUrl: "https://i.copy.sh/fs.json",
   bootFromFilesystem: true,
