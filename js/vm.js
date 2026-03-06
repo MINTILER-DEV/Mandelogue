@@ -2,6 +2,7 @@ const DEFAULT_VM_CONFIG = {
   memoryMb: 512,
   vgaMemoryMb: 16,
   autostart: true,
+  externalFetchProxyBaseUrl: "https://proxalogue-proxy.wasmer.app",
   // jsDelivr provides permissive CORS headers required by localhost dev servers.
   v86ScriptUrl: "https://cdn.jsdelivr.net/npm/v86@0.5.319+g62fd36e/build/libv86.js",
   wasmUrl: "https://cdn.jsdelivr.net/npm/v86@0.5.319+g62fd36e/build/v86.wasm",
@@ -26,6 +27,18 @@ const DEFAULT_VM_CONFIG = {
   cmdline:
     "rw apm=off vga=0x344 video=vesafb:ypan,vremap:8 root=host9p rootfstype=9p rootflags=trans=virtio,cache=loose mitigations=off audit=0 init_on_free=on tsc=reliable random.trust_cpu=on nowatchdog init=/usr/bin/init-openrc net.ifnames=0 biosdevname=0",
 };
+
+const EXTERNAL_VM_URL_CONFIG_KEYS = Object.freeze([
+  "v86ScriptUrl",
+  "wasmUrl",
+  "biosUrl",
+  "vgaBiosUrl",
+  "initialStateUrl",
+  "bundledDefaultSnapshotUrl",
+  "bundledDefaultSnapshotFallbackUrl",
+  "filesystemBaseUrl",
+  "filesystemIndexUrl",
+]);
 
 const MOUNT_BATCH_COMMAND_LIMIT = 24;
 const MOUNT_BATCH_COMMAND_LIMIT_MIN = 8;
@@ -152,6 +165,55 @@ function createDeferredYield() {
   return new Promise((resolve) => {
     setTimeout(resolve, 0);
   });
+}
+
+function normalizeExternalProxyBaseUrl(value) {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw) {
+    return "";
+  }
+  if (!/^https?:\/\//i.test(raw)) {
+    return "";
+  }
+  return raw.replace(/\/+$/, "");
+}
+
+function isExternalHttpUrl(value) {
+  return /^https?:\/\//i.test(String(value || "").trim());
+}
+
+function toProxiedExternalUrl(url, proxyBaseUrl) {
+  const trimmed = typeof url === "string" ? url.trim() : "";
+  if (!trimmed || !proxyBaseUrl || !isExternalHttpUrl(trimmed)) {
+    return trimmed;
+  }
+
+  const alreadyProxiedHttp = `${proxyBaseUrl}/http://`;
+  const alreadyProxiedHttps = `${proxyBaseUrl}/https://`;
+  if (trimmed.startsWith(alreadyProxiedHttp) || trimmed.startsWith(alreadyProxiedHttps)) {
+    return trimmed;
+  }
+
+  return `${proxyBaseUrl}/${trimmed}`;
+}
+
+function applyExternalProxyToVmConfig(config) {
+  const proxyBaseUrl = normalizeExternalProxyBaseUrl(config.externalFetchProxyBaseUrl);
+  if (!proxyBaseUrl) {
+    return {
+      ...config,
+      externalFetchProxyBaseUrl: "",
+    };
+  }
+
+  const patched = {
+    ...config,
+    externalFetchProxyBaseUrl: proxyBaseUrl,
+  };
+  for (const key of EXTERNAL_VM_URL_CONFIG_KEYS) {
+    patched[key] = toProxiedExternalUrl(config[key], proxyBaseUrl);
+  }
+  return patched;
 }
 
 async function resolveBundledSnapshotUrl(primaryUrl, fallbackUrl = "") {
@@ -656,7 +718,10 @@ export class VMService {
   constructor(bus, options = {}) {
     this.bus = bus;
     this.screenContainer = options.screenContainer;
-    this.config = { ...DEFAULT_VM_CONFIG, ...(options.config || {}) };
+    this.config = applyExternalProxyToVmConfig({
+      ...DEFAULT_VM_CONFIG,
+      ...(options.config || {}),
+    });
     this.emulator = null;
     this.commandQueue = [];
     this.bootOutputBuffer = "";
