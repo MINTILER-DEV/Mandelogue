@@ -1172,10 +1172,10 @@ async function bootstrap() {
       "terminal-active": "terminal active",
       "terminal-cooldown": "terminal busy",
       "background-unavailable": "bg channel unavailable",
-      "background-not-ready": "bg channel not ready",
+      "background-not-ready": "bg booting",
       mounting: "mount in progress",
-      "shell-busy": "shell busy",
-      "vm-not-ready": "vm not ready",
+      "shell-busy": "vm busy",
+      "vm-not-ready": "waiting for vm",
       error: "error",
       ok: "ok",
       "no-changes": "ok no changes",
@@ -1191,10 +1191,25 @@ async function bootstrap() {
     const previous = autoSyncSkipCounts.get(key) || 0;
     autoSyncSkipCounts.set(key, previous + 1);
     const counter = autoSyncSkipCounts.get(key);
-    const label = normalizedState === "skip" ? "skip" : normalizedState;
+    const waitingReasons = new Set([
+      "vm-not-ready",
+      "background-not-ready",
+      "shell-busy",
+      "terminal-active",
+      "terminal-cooldown",
+      "mounting",
+      "busy",
+    ]);
+    const label =
+      normalizedState === "skip" && waitingReasons.has(normalizedReason)
+        ? "wait"
+        : normalizedState === "skip"
+        ? "skip"
+        : normalizedState;
     const reasonText = normalizedReason ? ` ${formatAutoSyncReason(normalizedReason)}` : "";
     const sourceText = source === "manual" ? "manual" : "auto";
-    bottomState.autoSyncText = `Sync(${sourceText}): ${label}${reasonText} [${counter}]`;
+    const counterText = sourceText === "manual" ? ` [${counter}]` : "";
+    bottomState.autoSyncText = `Sync(${sourceText}): ${label}${reasonText}${counterText}`;
     renderBottomBar();
   };
 
