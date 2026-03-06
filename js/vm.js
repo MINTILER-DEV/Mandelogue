@@ -138,7 +138,10 @@ function loadScript(url) {
     script.src = url;
     script.async = true;
     script.onload = () => resolve();
-    script.onerror = () => reject(new Error("Failed to load v86 runtime script."));
+    script.onerror = () => {
+      sharedV86ScriptPromise = null;
+      reject(new Error("Failed to load v86 runtime script."));
+    };
     document.head.appendChild(script);
   });
 
@@ -214,6 +217,17 @@ function applyExternalProxyToVmConfig(config) {
     patched[key] = toProxiedExternalUrl(config[key], proxyBaseUrl);
   }
   return patched;
+}
+
+function isProxyRewrittenUrl(url, proxyBaseUrl) {
+  const trimmed = String(url || "").trim();
+  if (!trimmed || !proxyBaseUrl) {
+    return false;
+  }
+  return (
+    trimmed.startsWith(`${proxyBaseUrl}/http://`) ||
+    trimmed.startsWith(`${proxyBaseUrl}/https://`)
+  );
 }
 
 async function resolveBundledSnapshotUrl(primaryUrl, fallbackUrl = "") {
@@ -718,10 +732,11 @@ export class VMService {
   constructor(bus, options = {}) {
     this.bus = bus;
     this.screenContainer = options.screenContainer;
-    this.config = applyExternalProxyToVmConfig({
+    this.directConfig = {
       ...DEFAULT_VM_CONFIG,
       ...(options.config || {}),
-    });
+    };
+    this.config = applyExternalProxyToVmConfig(this.directConfig);
     this.emulator = null;
     this.commandQueue = [];
     this.bootOutputBuffer = "";
@@ -775,7 +790,69 @@ export class VMService {
     );
   }
 
+  restoreDirectExternalUrls() {
+    const restored = {
+      ...this.config,
+      externalFetchProxyBaseUrl: "",
+    };
+    for (const key of EXTERNAL_VM_URL_CONFIG_KEYS) {
+      restored[key] = this.directConfig[key];
+    }
+    this.config = restored;
+  }
+
+  async probeProxiedUrl(url, timeoutMs = 8000) {
+    const target = typeof url === "string" ? url.trim() : "";
+    if (!target) {
+      return true;
+    }
+    let controller = null;
+    let timeoutId = null;
+    try {
+      if (typeof AbortController === "function") {
+        controller = new AbortController();
+        timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+      }
+      const response = await fetch(target, {
+        method: "HEAD",
+        cache: "no-store",
+        ...(controller ? { signal: controller.signal } : {}),
+      });
+      return response.ok || response.status === 405;
+    } catch (error) {
+      return false;
+    } finally {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    }
+  }
+
+  async ensureExternalProxyAvailable() {
+    const proxyBaseUrl = normalizeExternalProxyBaseUrl(this.config.externalFetchProxyBaseUrl);
+    if (!proxyBaseUrl) {
+      return;
+    }
+    if (!isProxyRewrittenUrl(this.config.v86ScriptUrl, proxyBaseUrl)) {
+      return;
+    }
+    this.emitVmProgress("VM: checking external proxy availability...");
+    const scriptOk = await this.probeProxiedUrl(this.config.v86ScriptUrl);
+    const wasmOk = scriptOk ? await this.probeProxiedUrl(this.config.wasmUrl) : false;
+    if (scriptOk && wasmOk) {
+      return;
+    }
+
+    this.restoreDirectExternalUrls();
+    this.bus.emit("status", {
+      level: "info",
+      message:
+        "External proxy is unavailable or rate-limited. Falling back to direct VM asset URLs.",
+    });
+  }
+
   async init() {
+    await this.ensureExternalProxyAvailable();
     this.emitVmProgress("VM: loading v86 runtime script...");
     await loadScript(this.config.v86ScriptUrl);
     this.emitVmProgress("VM: runtime script loaded. Preparing VM...");
