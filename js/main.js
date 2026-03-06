@@ -1088,7 +1088,7 @@ async function bootstrap() {
   let currentMlpFileName = "project.mlp";
   let lastTerminalInputAt = Date.now();
   let terminalBusyUntil = 0;
-  let vmToHostSyncIntervalMs = 12000;
+  let vmToHostSyncIntervalMs = 8000;
   const VM_TO_HOST_IDLE_MS = 2500;
   const VM_TO_HOST_POST_INPUT_COOLDOWN_MS = 12000;
   const VM_TO_HOST_POST_ENTER_COOLDOWN_MS = 30000;
@@ -1118,7 +1118,7 @@ async function bootstrap() {
       maxMountFiles: 1000,
       maxMountFileBytes: 512 * 1024,
       maxMountTotalBytes: 16 * 1024 * 1024,
-      syncIntervalSeconds: 20,
+      syncIntervalSeconds: 12,
       mountBatchCommandLimit: 20,
       mountBase64ChunkSize: 512,
     },
@@ -1126,7 +1126,7 @@ async function bootstrap() {
       maxMountFiles: 2000,
       maxMountFileBytes: 768 * 1024,
       maxMountTotalBytes: 32 * 1024 * 1024,
-      syncIntervalSeconds: 12,
+      syncIntervalSeconds: 8,
       mountBatchCommandLimit: 24,
       mountBase64ChunkSize: 768,
     },
@@ -1134,7 +1134,7 @@ async function bootstrap() {
       maxMountFiles: 5000,
       maxMountFileBytes: 2 * 1024 * 1024,
       maxMountTotalBytes: 160 * 1024 * 1024,
-      syncIntervalSeconds: 8,
+      syncIntervalSeconds: 5,
       mountBatchCommandLimit: 36,
       mountBase64ChunkSize: 1024,
     },
